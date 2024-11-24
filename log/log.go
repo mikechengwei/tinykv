@@ -280,3 +280,84 @@ func NewLogger(w io.Writer, prefix string) *Logger {
 	}
 	return &Logger{_log: log.New(w, prefix, LstdFlags), level: level, highlighting: true}
 }
+
+func LogOutput(t LogType, format string, v ...interface{}) {
+	LogOutputDepth(4, PT_none, t, format, v)
+}
+
+func LogOutputDepth(dep int, pkt PkgType, t LogType, format string, v ...interface{}) {
+	l := _log
+	if l.level|LogLevel(t) != l.level {
+		return
+	}
+
+	logStr, logColor := LogTypeToString(t)
+	var s string
+	if l.highlighting {
+		s = "\033" + logColor + "m[" + pkt.String() + logStr + "] " + fmt.Sprintf(format, v...) + "\033[0m"
+	} else {
+		s = "[" + pkt.String() + logStr + "] " + fmt.Sprintf(format, v...)
+	}
+
+	l._log.Output(dep, s)
+}
+
+type PkgType int
+
+const (
+	PT_none        = 0
+	PT_raft        = 0x1
+	PT_raftStore   = 0x2
+	PT_raftStorage = 0x4
+	//
+	PT_testlog = 0x5
+	//
+	PT_test_txn = 0x6
+	//
+	PT_test_raftStore = 0x100
+)
+
+func (pt PkgType) String() string {
+	switch pt {
+	case PT_raft:
+		return "<raft>"
+	case PT_raftStore:
+		return "<raft store>"
+	case PT_raftStorage:
+		return "<raft storage>"
+	case PT_test_raftStore:
+		return "<test raft-store>"
+	case PT_test_txn:
+		return "<test txn>"
+	case PT_testlog:
+		return "<test>"
+	case PT_none:
+		return "<none>"
+	}
+	return fmt.Sprintf("<unknow-%d>", pt)
+}
+
+var g_pt PkgType = 0
+
+func AddPkgType(pkg PkgType) {
+	g_pt |= pkg
+}
+
+func init() {
+	AddPkgType(PT_test_txn)
+}
+
+func TxnDbg(format string, v ...interface{}) {
+	PkgDebugf(PT_test_txn, 4, format, v...)
+}
+
+// this dep = 5;
+func PkgDebugf(pkg PkgType, dep int, format string, v ...interface{}) {
+	if g_pt&pkg != 0 {
+		LogOutputDepth(dep, pkg, LOG_DEBUG, format, v...)
+	}
+}
+
+func TestLog(format string, v ...interface{}) {
+	LogOutputDepth(3, PT_testlog, LOG_ERROR, format, v...)
+}

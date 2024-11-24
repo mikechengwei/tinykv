@@ -16,6 +16,7 @@ package raft
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
 	"io"
 	"io/ioutil"
 	"os"
@@ -25,6 +26,10 @@ import (
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
+
+func debugf(format string, v ...interface{}) {
+	log.PkgDebugf(log.PT_raft, 4, format, v...)
+}
 
 func min(a, b uint64) uint64 {
 	if a > b {
@@ -117,7 +122,7 @@ func (p uint64Slice) Less(i, j int) bool { return p[i] < p[j] }
 func (p uint64Slice) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 
 func IsLocalMsg(msgt pb.MessageType) bool {
-	return msgt == pb.MessageType_MsgHup || msgt == pb.MessageType_MsgBeat
+	return msgt == pb.MessageType_MsgHup || msgt == pb.MessageType_MsgBeat || msgt == pb.MessageType_MsgPropose || msgt == pb.MessageType_MsgTransferLeader
 }
 
 func IsResponseMsg(msgt pb.MessageType) bool {
@@ -126,4 +131,8 @@ func IsResponseMsg(msgt pb.MessageType) bool {
 
 func isHardStateEqual(a, b pb.HardState) bool {
 	return a.Term == b.Term && a.Vote == b.Vote && a.Commit == b.Commit
+}
+
+func IsMajor(n, total int) bool {
+	return n > (total / 2)
 }

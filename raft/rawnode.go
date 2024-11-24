@@ -16,6 +16,8 @@ package raft
 
 import (
 	"errors"
+	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -70,12 +72,15 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
+	prevReady Ready
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	return nil, nil
+	rn := &RawNode{Raft: newRaft(config)}
+	rn.prevReady = makeReadyState(rn.Raft)
+	return rn, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -141,21 +146,81 @@ func (rn *RawNode) Step(m pb.Message) error {
 }
 
 // Ready returns the current point-in-time state of this RawNode.
-func (rn *RawNode) Ready() Ready {
+func (rn *RawNode) Ready() (rd Ready) {
 	// Your Code Here (2A).
-	return Ready{}
+	r := rn.Raft
+	debugf("Ready(%s)", r.RaftLog.String())
+	//soft state;
+	newrd := makeReadyState(r)
+	rn.readyState(&rd, &rn.prevReady, &newrd)
+	//
+	rd.Entries = r.RaftLog.unstableEntries()
+	//TODO (snapshot) : to do later;
+	if r.RaftLog.pendingSnapshot != nil {
+		rd.Snapshot = *r.RaftLog.pendingSnapshot
+	}
+	rd.CommittedEntries = r.RaftLog.nextEnts()
+	//fetch messages;
+	rd.Messages = r.msgs
+	r.msgs = []pb.Message{}
+	return rd
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
-	return false
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		return true
+	}
+	newrd := makeReadyState(rn.Raft)
+	//debugf("hashReady:old=%s;new=%s;", state2str(&rn.prevReady), state2str(&newrd))
+	if false == sameSoftState(&newrd, &rn.prevReady) {
+		//log.Debugf("softState %d", len(rn.Raft.msgs))
+		return true
+	}
+	if false == sameHardState(&newrd, &rn.prevReady) {
+		//log.Debugf("hardState %d", len(rn.Raft.msgs))
+		return true
+	}
+	if len(rn.Raft.msgs) > 0 {
+		//log.Debugf("messages")
+		return true
+	}
+	rlog := rn.Raft.RaftLog
+	if rlog.LastIndex() <= rlog.stabled {
+		return rlog.committed > rlog.applied
+	}
+	return true
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	debugf("Advance(hard=%+v;soft=%+v)", rd.HardState, rd.SoftState)
+	// Your Code Here (2A).
+	rlog := rn.Raft.RaftLog
+	rlog.applied += uint64(len(rd.CommittedEntries))
+	rlog.stabled += uint64(len(rd.Entries))
+	if rlog.stabled < rlog.applied {
+		str := ""
+		if rd.Snapshot.GetMetadata() != nil {
+			md := rd.Snapshot.GetMetadata()
+			str = fmt.Sprintf(`snapshot{%d,%d};`, md.GetIndex(), md.GetTerm())
+		}
+		log.Fatalf(`%s commit=%d;enties=%d;%srlog{%s}`, rn.Raft.tag, len(rd.CommittedEntries), len(rd.Entries), str, rlog.String())
+	}
+	//
+	if false == emptySoftState(&rd) && false == sameSoftState(&rd, &rn.prevReady) {
+		rn.prevReady.RaftState = rd.SoftState.RaftState
+		rn.prevReady.Lead = rd.SoftState.Lead
+	}
+	if false == emptyHardState(&rd) && false == sameHardState(&rd, &rn.prevReady) {
+		rn.prevReady.HardState = rd.HardState
+	}
+	//TODO (snapshot) : to do later;
+	rlog.pendingSnapshot = nil //reset;
+	rlog.maybeCompact(rn.RaftID())
 }
 
 // GetProgress return the Progress of this node and its peers, if this
@@ -173,4 +238,64 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 // TransferLeader tries to transfer leadership to the given transferee.
 func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
+}
+
+func (rn *RawNode) RaftID() uint64 {
+	return rn.Raft.id
+}
+
+// ----------------------------------------------------
+func makeReadyState(r *Raft) (rd Ready) {
+	rd.SoftState = &SoftState{
+		Lead:      r.Lead,
+		RaftState: r.State,
+	}
+	//hardstate;
+	rd.HardState.Commit = r.RaftLog.committed
+	rd.HardState.Term = r.Term
+	rd.HardState.Vote = r.Vote
+	return
+}
+
+func sameSoftState(r *Ready, b *Ready) bool {
+	return r.Lead == b.Lead && r.RaftState == b.RaftState
+}
+
+func sameHardState(r *Ready, b *Ready) bool {
+	return r.Vote == b.Vote && r.Term == b.Term && r.Commit == b.Commit
+}
+
+func emptyHardState(r *Ready) bool {
+	hs := r.HardState
+	return hs.Vote == 0 && hs.Commit == 0 && hs.Term == 0
+}
+
+func emptySoftState(r *Ready) bool {
+	ss := r.SoftState
+	if ss == nil {
+		return true
+	}
+	return ss.Lead == 0 && ss.RaftState == 0
+}
+
+func state2str(rd *Ready) string {
+	return fmt.Sprintf("softState=%+v;HardState=%+v.", rd.SoftState, rd.HardState)
+}
+
+func (rn *RawNode) readyState(set, old, newrd *Ready) {
+	debugf("old(%s) new(%s)", old, newrd)
+	r := rn.Raft
+	//check if changed;
+	if false == sameSoftState(old, newrd) {
+		set.SoftState = &SoftState{
+			Lead:      r.Lead,
+			RaftState: r.State,
+		}
+	}
+	//hardstate;
+	if false == sameHardState(old, newrd) {
+		set.HardState.Commit = r.RaftLog.committed
+		set.HardState.Term = r.Term
+		set.HardState.Vote = r.Vote
+	}
 }

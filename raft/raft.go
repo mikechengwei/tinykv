@@ -426,6 +426,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	//4.附加日志中尚未存在的任何新条目
 	//5.如果 leaderCommit > commitIndex，令 commitIndex 等于 leaderCommit 和 新日志条目索引值中较小的一个
 	cidx := min(req.LeaderCommitId, req.PrevLogIndex)
+
 	if cidx > r.RaftLog.committed {
 		r.RaftLog.committed = cidx
 	}

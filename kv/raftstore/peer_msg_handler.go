@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -43,6 +44,46 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	raftGroup := d.peer.RaftGroup
+	if !raftGroup.HasReady() {
+		return
+	}
+	//1.stabled;
+	//d.saveRaftLog(&rd)
+	util.RSDebugf("%s HandleRaftReady", d.peer.Tag)
+	rd := raftGroup.Ready()
+	_, err := d.peerStorage.SaveReadyState(&rd)
+	if err != nil {
+		panic(err)
+	}
+	if rd.Snapshot.GetMetadata() != nil {
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.Region()})
+		d.SetRegion(d.Region())
+	}
+	//3.processSnapshot;
+	//2.send msg to peers;
+	d.sendRaftMsg(&rd)
+	//4.apply;
+	if len(rd.CommittedEntries) > 0 {
+		util.RSDebugf("%s HandleRaftReady apply entries(%d)", d.Tag, len(rd.CommittedEntries))
+		for idx := 0; idx < len(rd.CommittedEntries); idx++ {
+			ent := &rd.CommittedEntries[idx]
+			if ent.EntryType == eraftpb.EntryType_EntryConfChange {
+				//TODO : raftGroup.ProposeConfChange()
+				var cc eraftpb.ConfChange
+				err := cc.Unmarshal(ent.GetData())
+				if err != nil {
+					log.Fatalf(`apply confChange err:%s`, err.Error())
+				}
+				d.updateConfChange(&cc)
+				d.RaftGroup.ApplyConfChange(cc)
+			} else {
+				d.processEntry(ent)
+			}
+		}
+	}
+	//5.at last;
+	raftGroup.Advance(rd)
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -113,7 +154,10 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
-	// Your Code Here (2B).
+	if true == d.processNoreplicate(msg, cb) {
+		return
+	}
+	d.raftPropose(msg, cb)
 }
 
 func (d *peerMsgHandler) onTick() {
@@ -223,9 +267,9 @@ func (d *peerMsgHandler) validateRaftMessage(msg *rspb.RaftMessage) bool {
 	return true
 }
 
-/// Checks if the message is sent to the correct peer.
-///
-/// Returns true means that the message can be dropped silently.
+// / Checks if the message is sent to the correct peer.
+// /
+// / Returns true means that the message can be dropped silently.
 func (d *peerMsgHandler) checkMessage(msg *rspb.RaftMessage) bool {
 	fromEpoch := msg.GetRegionEpoch()
 	isVoteMsg := util.IsVoteMessage(msg.Message)

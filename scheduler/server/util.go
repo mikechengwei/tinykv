@@ -164,10 +164,6 @@ func Region2Str(region *metapb.Region) string {
 		region.GetRegionEpoch().GetConfVer(), region.GetRegionEpoch().GetVersion(),
 		region.GetPeers())
 }
-func RegionBase2Str(region *metapb.Region) string {
-	return fmt.Sprintf("{Id:%d start:'%s' end:'%s' ConfVer:%d Version:%d}",
-		region.GetId(), region.GetStartKey(), region.GetEndKey(), region.GetRegionEpoch().GetConfVer(), region.GetRegionEpoch().GetVersion())
-}
 
 func RegionBase2Str(region *metapb.Region) string {
 	return fmt.Sprintf("{Id:%d start:'%s' end:'%s' ConfVer:%d Version:%d}",

@@ -96,3 +96,8 @@ func AllLocksForTxn(txn *MvccTxn) ([]KlPair, error) {
 	}
 	return result, nil
 }
+
+func (lock *Lock) IsExpired(nextTs uint64) bool {
+	next := PhysicalTime(nextTs)
+	return next > (PhysicalTime(lock.Ts) + lock.Ttl)
+}
